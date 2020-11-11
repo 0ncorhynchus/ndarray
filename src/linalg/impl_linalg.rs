@@ -355,6 +355,52 @@ where
     }
 }
 
+#[cfg(feature = "blas")]
+impl<S, A> ArrayBase<S, Ix2>
+where
+    S: Data<Elem = A>,
+    A: LinalgScalar,
+{
+    pub fn ger<S2, S3>(&mut self, alpha: A, x: &ArrayBase<S2, Ix1>, y: &ArrayBase<S3, Ix1>)
+    where
+        S2: Data<Elem = A>,
+        S3: Data<Elem = A>,
+    {
+        macro_rules! ger {
+            ($ty:ty, $func:ident) => {{
+                if blas_row_major_2d::<$ty, _>(self) {
+                    assert!(blas_compat_1d::<$ty, _>(x));
+                    assert!(blas_compat_1d::<$ty, _>(y));
+                    let (m, n) = self.dim();
+                    assert!(m == x.len());
+                    assert!(n == y.len());
+                    let stride = self.strides()[0] as blas_index;
+                    unsafe {
+                        let (x_ptr, _, incx) =
+                            blas_1d_params(x.ptr.as_ptr(), x.len(), x.strides()[0]);
+                        let (y_ptr, _, incy) =
+                            blas_1d_params(y.ptr.as_ptr(), y.len(), y.strides()[0]);
+                        blas_sys::$func(
+                            CBLAS_LAYOUT::CblasRowMajor,
+                            m as blas_index,
+                            n as blas_index,
+                            cast_as(&alpha),
+                            x_ptr as *const _,
+                            incx,
+                            y_ptr as *const _,
+                            incy,
+                            self.ptr.as_ptr() as *mut _,
+                            stride,
+                        );
+                    }
+                }
+            }};
+        }
+        ger! {f32, cblas_sger};
+        ger! {f64, cblas_dger};
+    }
+}
+
 // mat_mul_impl uses ArrayView arguments to send all array kinds into
 // the same instantiated implementation.
 #[cfg(not(feature = "blas"))]
@@ -821,5 +867,37 @@ mod blas_tests {
         let m: Array2<f32> = Array2::zeros((3, 5).f());
         assert!(!blas_row_major_2d::<f32, _>(&m));
         assert!(blas_column_major_2d::<f32, _>(&m));
+    }
+
+    #[test]
+    fn blas_ger_f32() {
+        let mut m: Array2<f32> = Array2::zeros((3, 5));
+        let x: Array1<f32> = arr1(&[1.0, 2.0, 3.0]);
+        let y: Array1<f32> = arr1(&[1.0, 2.0, 3.0, 4.0, 5.0]);
+        m.ger(2.0, &x, &y);
+        assert_eq!(
+            m,
+            arr2(&[
+                [2.0, 4.0, 6.0, 8.0, 10.0],
+                [4.0, 8.0, 12.0, 16.0, 20.0],
+                [6.0, 12.0, 18.0, 24.0, 30.0]
+            ])
+        );
+    }
+
+    #[test]
+    fn blas_ger_f64() {
+        let mut m: Array2<f64> = Array2::zeros((3, 5));
+        let x: Array1<f64> = arr1(&[1.0, 2.0, 3.0]);
+        let y: Array1<f64> = arr1(&[1.0, 2.0, 3.0, 4.0, 5.0]);
+        m.ger(2.0, &x, &y);
+        assert_eq!(
+            m,
+            arr2(&[
+                [2.0, 4.0, 6.0, 8.0, 10.0],
+                [4.0, 8.0, 12.0, 16.0, 20.0],
+                [6.0, 12.0, 18.0, 24.0, 30.0]
+            ])
+        );
     }
 }
