@@ -355,10 +355,9 @@ where
     }
 }
 
-#[cfg(feature = "blas")]
 impl<S, A> ArrayBase<S, Ix2>
 where
-    S: Data<Elem = A>,
+    S: DataMut<Elem = A>,
     A: LinalgScalar,
 {
     pub fn ger<S2, S3>(&mut self, alpha: A, x: &ArrayBase<S2, Ix1>, y: &ArrayBase<S3, Ix1>)
@@ -366,21 +365,55 @@ where
         S2: Data<Elem = A>,
         S3: Data<Elem = A>,
     {
+        let (m, n) = self.dim();
+        assert!(m == x.len());
+        assert!(n == y.len());
+
+        self.ger_impl(alpha, x, y);
+    }
+
+    fn ger_generic<S2, S3>(&mut self, alpha: A, x: &ArrayBase<S2, Ix1>, y: &ArrayBase<S3, Ix1>)
+    where
+        S2: Data<Elem = A>,
+        S3: Data<Elem = A>,
+    {
+        let (m, _) = self.dim();
+        for i in 0..m {
+            unsafe {
+                self.row_mut(i).scaled_add(alpha * *x.uget(i), y);
+            }
+        }
+    }
+
+    #[cfg(not(feature = "blas"))]
+    fn ger_impl<S2, S3>(&mut self, alpha: A, x: &ArrayBase<S2, Ix1>, y: &ArrayBase<S3, Ix1>)
+    where
+        S2: Data<Elem = A>,
+        S3: Data<Elem = A>,
+    {
+        self.ger_generic(alpha, x, y);
+    }
+
+    #[cfg(feature = "blas")]
+    fn ger_impl<S2, S3>(&mut self, alpha: A, x: &ArrayBase<S2, Ix1>, y: &ArrayBase<S3, Ix1>)
+    where
+        S2: Data<Elem = A>,
+        S3: Data<Elem = A>,
+    {
         macro_rules! ger {
-            ($ty:ty, $func:ident) => {{
-                if blas_row_major_2d::<$ty, _>(self) {
-                    assert!(blas_compat_1d::<$ty, _>(x));
-                    assert!(blas_compat_1d::<$ty, _>(y));
+            ($ty:ty, $ger:ident) => {{
+                if blas_row_major_2d::<$ty, _>(self)
+                    && blas_compat_1d::<$ty, _>(x)
+                    && blas_compat_1d::<$ty, _>(y)
+                {
                     let (m, n) = self.dim();
-                    assert!(m == x.len());
-                    assert!(n == y.len());
                     let stride = self.strides()[0] as blas_index;
                     unsafe {
                         let (x_ptr, _, incx) =
                             blas_1d_params(x.ptr.as_ptr(), x.len(), x.strides()[0]);
                         let (y_ptr, _, incy) =
                             blas_1d_params(y.ptr.as_ptr(), y.len(), y.strides()[0]);
-                        blas_sys::$func(
+                        blas_sys::$ger(
                             CBLAS_LAYOUT::CblasRowMajor,
                             m as blas_index,
                             n as blas_index,
@@ -393,11 +426,15 @@ where
                             stride,
                         );
                     }
+                    return;
                 }
             }};
         }
+
         ger! {f32, cblas_sger};
         ger! {f64, cblas_dger};
+
+        self.ger_generic(alpha, x, y);
     }
 }
 
@@ -868,6 +905,11 @@ mod blas_tests {
         assert!(!blas_row_major_2d::<f32, _>(&m));
         assert!(blas_column_major_2d::<f32, _>(&m));
     }
+}
+
+#[cfg(test)]
+mod ger_tests {
+    use super::*;
 
     #[test]
     fn blas_ger_f32() {
